@@ -19,3 +19,7 @@ VMHunt is a set of tools for analyzing virtualized binary code. Now we only supp
    `./slicer tracefile`
 4. Run MG symbolic execution  
    `./mgse tracefile`
+
+
+# instrace_vm.txt 가 test 를 트레이스 뽑은 결과입니다. 
+# ./vmextract instrace_vm.txt 하면 보고서에 있는 lea error이 뜨는 모습을 확인하실 수 있습니다.
