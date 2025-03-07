@@ -5,8 +5,8 @@
 #include <mutex>
 #include <string>
 
-// Global output file – logs to "trace.log"
-std::ofstream traceFile("trace.log");
+// Global output file – logs to "devirt.vmp.trace"
+std::ofstream traceFile("devirt.vmp.trace");
 
 // Vector to store VMP sections as (start, end) pairs.
 std::vector< std::pair<ADDRINT, ADDRINT> > vmpSections;
@@ -25,8 +25,7 @@ UINT32 threshold = 10000;
 
 /**
  * writeTrace - Logs the current instruction, its disassembly, and registers.
- * Note: For memory read/write, it uses a questionable method (reading REG_INST_PTR)
- * which you may wish to replace with a safer mechanism.
+ (reading REG_INST_PTR) maybe safer needed?
  */
 VOID writeTrace(THREADID tid, const CONTEXT* ctx, INS ins) {
     std::lock_guard<std::mutex> lock(traceMutex);
@@ -44,14 +43,14 @@ VOID writeTrace(THREADID tid, const CONTEXT* ctx, INS ins) {
               << "RBP=" << PIN_GetContextReg(ctx, REG_RBP) << " "
               << "RSP=" << PIN_GetContextReg(ctx, REG_RSP) << " ";
     
-    // Log memory read (if applicable)
+    // Log memory read
     if (INS_IsMemoryRead(ins)) {
         ADDRINT memAddr;
-        // WARNING: This retrieves REG_INST_PTR (not the memory read EA). Replace with a safer routine if needed.
+        //! Probable unsafe routine
         PIN_GetContextRegval(ctx, REG_INST_PTR, reinterpret_cast<UINT8*>(&memAddr));
         traceFile << "MEMORY_READ: " << memAddr << "=" << *(UINT64*)memAddr << " ";
     }
-    // Log memory write (if applicable)
+    // Log memory write
     if (INS_IsMemoryWrite(ins)) {
         ADDRINT memAddr;
         PIN_GetContextRegval(ctx, REG_INST_PTR, reinterpret_cast<UINT8*>(&memAddr));
@@ -148,14 +147,14 @@ VOID onFunctionExit(TRACE trace, VOID* v) {
 }
 
 /**
- * ImageLoad - Called for each image load. It calls findVmpSections to record VMP sections.
+ * ImageLoad - calls findVmpSections to record VMP sections.
  */
 VOID ImageLoad(IMG img, VOID* v) {
     findVmpSections(img, v);
 }
 
 int main(int argc, char* argv[]) {
-    // Initialize symbol processing.
+
     PIN_InitSymbols();
     if (PIN_Init(argc, argv)) return 1;
 
