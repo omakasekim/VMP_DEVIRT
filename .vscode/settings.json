@@ -36,6 +36,7 @@
         "string_view": "cpp",
         "tuple": "cpp",
         "typeinfo": "cpp",
-        "vector": "cpp"
+        "vector": "cpp",
+        "*.ph": "cpp"
     }
 }
