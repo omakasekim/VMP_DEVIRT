@@ -36,7 +36,7 @@ for line in trace:
         reg = getattr(ctx.registers, reg_name.lower())
         ctx.setConcreteRegisterValue(reg, value)
 
-    if mem_read:
+    if mem_read: 
         ctx.setConcreteMemoryValue(mem_read[0], mem_read[1])
 
     inst = Instruction()

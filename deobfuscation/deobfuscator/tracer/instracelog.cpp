@@ -98,6 +98,7 @@ void get_context(ADDRINT addr, CONTEXT *fromctx, ADDRINT raddr, ADDRINT waddr) {
      // fprintf(fp_trace, "rflags:%lx;", before_rflags_val);
      // fprintf(fp_trace, "write:%lx;", addr_to_write);
      // fprintf(fp_trace, "read:%lx;;", addr_to_read);
+     // fprintf(fp_trace, "")
 
      fprintf(fp_trace, "\n");
 }
