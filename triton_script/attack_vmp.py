@@ -2,7 +2,6 @@ from triton import *
 from triton.ast import AST_NODE
 import json
 import os
-import llvmlite.binding as llvm
 from llvmlite import ir
 from collections import defaultdict
 import argparse
