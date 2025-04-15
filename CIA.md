@@ -235,3 +235,441 @@ CIA-toolchain의 개선 가능성은 몇 가지로 요약할 수 있다。
 - **자동화 강화**: 현재 반자동으로 이루어지는 난독화 도구 실행 과정을 스크립트로 완전 자동화하면 파이프라인이 더 간결해질 것이다。 예를 들어 Themida와 VMProtect의 CLI 옵션을 활용한 자동화 스크립트를 추가하거나, GUI 기반 도구와의 인터페이스를 위한 API 래퍼를 제공하는 방식이다。
 
 결론적으로, CIA-toolchain은 NDSS 2022 논문의 CIA 기법을 실증하는 데 충분한 도구로 기능하지만, 실제 현업에서의 활용이나 다양한 환경으로의 확장을 위해서는 추가적인 개선이 필요하다。 그럼에도 불구하고 이 도구는 난독화 분석 및 역공학 연구자들에게 새로운 공격 기법을 실험하고 이해하는 데 큰 가치를 제공한다。
+
+
+
+
+
+
+
+
+
+
+Möbius Strip Reverse Engineering
+Street AddressCity, State, ZipPhone Number
+Training ClassesResearchBlogContactSign In
+VMProtect, Part 0: Basics
+August 6, 2008 Rolf Rolles
+Originally published on August 6th, 2008 on OpenRCE
+
+This is part #0 of a four-part series on VMProtect. The other parts can be found here:
+
+Part 0: Basics
+Part 1: Bytecode and IR
+Part 2: Primer on Optimization
+Part 3: Optimizing and Compiling
+VMProtect is a virtualization protector.  Like other protections in the genre, among others ReWolf's x86 Virtualizer and CodeVirtualizer, it works by disassembling the x86 bytecode of the target executable and compiling it into a proprietary, polymorphic bytecode which is executed in a custom interpreter at run-time.  This is unlike the traditional notions of packing, in which the x86 bytecode is simply encrypted and/or compressed:  with virtualization, the original x86 bytecode in the protected areas is gone, never to be seen again.  Or so the idea goes.
+
+If you've never looked at VMProtect before, I encourage you to take a five-minute look in IDA (here's a sample packed binary).  As far as VMs go, it is particularly skeletal and easily comprehended.  The difficulty lies in recreating working x86 bytecode from the VM bytecode.  Here's a two-minute analysis of its dispatcher.
+
+push edi; push all registers
+push ecx
+push edx
+push esi
+push ebp
+push ebx
+push eax
+push edx
+pushf
+push 0 ; imagebase fixup
+mov esi, [esp+8+arg_0] ; esi = pointer to VM bytecode
+mov ebp, esp ; ebp = VM's "stack" pointer
+sub esp, 0C0h
+mov edi, esp ; edi = "scratch" data area
+
+VM__FOLLOW__Update:
+add esi, [ebp+0]
+
+VM__FOLLOW__Regular:
+mov al, [esi]; read a byte from EIP
+movzx eax, al
+sub esi, -1; increment EIP
+jmp ds:VM__HandlerTable[eax*4] ; execute instruction handler
+A feature worth discussing is the "scratch space", referenced by the register edi throughout the dispatch loop.  This is a 16-dword-sized area on the stack where VMProtect saves the registers upon entering the VM, modifies them throughout the course of a basic block, and from whence it restores the registers upon exit.  For each basic block protected by the VM, the layout of the registers in the scratch space can potentially be different.
+
+Here's a disassembly of some instruction handlers.  Notice that A) VMProtect is a stack machine and that B) each handler -- though consisting of scant few instructions -- performs several tasks, e.g. popping several values, performing multiple operations, pushing one or more values.
+
+#00:x = [EIP-1] & 0x3C; y = popd; [edi+x] = y
+
+.text:00427251 and al, 3Ch; al = instruction number
+.text:00427254 mov edx, [ebp+0] ; grab a dword off the stack
+.text:00427257 add ebp, 4 ; pop the stack
+.text:0042725A mov [edi+eax], edx ; store the dword in the scratch space
+
+#01:x = [EIP-1] & 0x3C; y = [edi+x]; pushd y
+
+.vmp0:0046B0EB and al, 3Ch; al = instruction number
+.vmp0:0046B0EE mov edx, [edi+eax] ; grab a dword out of the scratch space
+.vmp0:0046B0F1 sub ebp, 4 ; subtract 4 from the stack pointer
+.vmp0:0046B0F4 mov [ebp+0], edx ; push the dword onto the stack
+
+#02:x = popw, y = popw, z = x + y, pushw z, pushf
+
+.text:004271FB mov ax, [ebp+0] ; pop a word off the stack
+.text:004271FF sub ebp, 2
+.text:00427202 add [ebp+4], ax ; add it to another word on the stack
+.text:00427206 pushf
+.text:00427207 pop dword ptr [ebp+0] ; push the flags
+
+#03:x = [EIP++]; w = popw; [edi+x] = Byte(w)
+
+.vmp0:0046B02A movzx eax, byte ptr [esi] ; read a byte from EIP
+.vmp0:0046B02D mov dx, [ebp+0] ; pop a word off the stack
+.vmp0:0046B031 inc esi ; EIP++
+.vmp0:0046B032 add ebp, 2; adjust stack pointer
+.vmp0:0046B035 mov [edi+eax], dl ; write a byte into the scratch area
+
+#04:x = popd, y = popw, z = x << y, pushd z, pushf
+
+.vmp0:0046B095 mov eax, [ebp+0]; pop a dword off the stack
+.vmp0:0046B098 mov cl, [ebp+4] ; pop a word off the stack
+.vmp0:0046B09B sub ebp, 2
+.vmp0:0046B09E shr eax, cl ; shr the dword by the word
+.vmp0:0046B0A0 mov [ebp+4], eax; push the result
+.vmp0:0046B0A3 pushf
+.vmp0:0046B0A4 pop dword ptr [ebp+0] ; push the flags
+
+#05:x = popd, pushd ss:[x]
+
+.vmp0:0046B5F7 mov eax, [ebp+0]; pop a dword off the stack
+.vmp0:0046B5FA mov eax, ss:[eax] ; read a dword from ss
+.vmp0:0046B5FD mov [ebp+0], eax; push that dword
+ 
+← VMProtect, Part 1: Bytecode and IRCompiler 1, X86 Virtualizer 0 →
+Comments (2)Newest First
+Newest First
+Preview Post Comment…
+Sneeker 5 months ago · 0 Likes
+  
+Thanks for this free material, it's great to follow along!
+
+Pizza Recipes 11 months ago · 0 Likes
+  
+Great bloog you have
+
+Powered by Squarespace
+
+
+
+
+
+
+Möbius Strip Reverse Engineering
+Street AddressCity, State, ZipPhone Number
+Training ClassesResearchBlogContactSign In
+VMProtect, Part 1: Bytecode and IR
+August 6, 2008 Rolf Rolles
+Originally posted on August 6th, 2008 on OpenRCE
+
+This is part #1 of a four-part series on VMProtect. The other parts can be found here:
+
+Part 0: Basics
+Part 1: Bytecode and IR
+Part 2: Primer on Optimization
+Part 3: Optimizing and Compiling
+The approach I took with ReWolf's x86 Virtualizer is also applicable here, although a more sophisticated compiler is required.  What follows is some preliminary notes on the design and implementation of such a component.  These are not complete details on breaking the protection; I confess to having only looked at a few samples, and I am not sure which protection options were enabled.
+
+As before, we begin by constructing a disassembler for the interpreter.  This is immediately problematic, since the bytecode language is polymorphic.  I have created an IDA plugin that automatically constructs OCaml source code for a bytecode disassembler.  In a production-quality implementation, this should be implemented as a standalone component that returns a closure.
+
+The generated disassembler, then, looks like this:
+
+let disassemble bytearray index =
+match (bytearray.(index) land 0xff) with
+| 0x0-> (VM__Handler0__PopIntoRegister(0),[index+1])
+| 0x1-> (VM__Handler1__PushDwordFromRegister(0),[index+1])
+| 0x2-> (VM__Handler2__AddWords,[index+1])
+| 0x3-> (VM__Handler3__StoreByteIntoRegister(bytearray.(index+1)),[index+2])
+| 0x4-> (VM__Handler0__PopIntoRegister(4),[index+1])
+| 0x5-> (VM__Handler1__PushDwordFromRegister(4),[index+1])
+| 0x6-> (VM__Handler4__ShrDword,[index+1])
+| 0x7-> (VM__Handler5__ReadDword__FromStackSegment,[index+1])
+| ...-> ...
+Were we to work with the instructions individually in their natural granularity, depicted above, the bookkeeping on the semantics of each would likely prove tedious.  For illustration, compare and contrast handlers #02 and #04.  Both have the same basic pattern:  pop two values (words vs. dwords), perform a binary operation (add vs. shr), push the result, then push the flags.  The current representation of instructions does not express these, or any, similarities.
+
+Handler #02:           Handler #04:
+mov ax, [ebp+0]        mov eax, [ebp+0]
+sub ebp, 2             mov cl, [ebp+4]
+add [ebp+4], ax        sub ebp, 2
+pushf                  shr eax, cl
+pop dword ptr [ebp+0]  mov [ebp+4], eax
+pushf
+pop dword ptr [ebp+0]
+Therefore, we pull a standard compiler-writer's trick and translate the VMProtect instructions into a simpler, "intermediate" language (hereinafter "IR") which resembles the pseudocode snippets atop the handlers in part zero.  Below is a fragment of that language's abstract syntax.
+
+type size = B | W | D | Q
+type temp = int * size
+type seg= Scratch | SS | FS | Regular
+type irbinop= Add | And | Shl | Shr | MakeQword
+type irunop= Neg | MakeByte | TakeHighDword | Flags
+type irexpr = 
+| Reg of register 
+| Temp of int 
+| Const of const 
+| Deref of seg * irexpr * size 
+| Binop of irexpr * irbinop * irexpr 
+| Unop of irexpr * irunop
+
+type ir = 
+DeclareTemps of temp list
+| Assign of irexpr * irexpr
+| Push of irexpr
+| Pop of irexpr
+| Return
+A portion of the VMProtect -> IR translator follows; compare the translation for handlers #02 and #04.
+
+let make_microcode = function
+VM__Handler0__PopIntoRegister(b) -> [Pop(Deref(Scratch, Const(Dword(zero_extend_byte_dword(b land 0x3C))), D))]
+| VM__Handler2__AddWords -> [DeclareTemps([(0, W);(1, W);(2, W)]);
+ Pop(Temp(0));
+ Pop(Temp(1));
+ Assign(Temp(2), Binop(Temp(0), Add, Temp(1)));
+ Push(Temp(2));
+ Push(Unop(Temp(2), Flags))]
+| VM__Handler4__ShrDword -> [DeclareTemps([(0, D);(1, W);(2, D)]);
+ Pop(Temp(0));
+ Pop(Temp(1));
+ Assign(Temp(2), Binop(Temp(0), Shr, Temp(1)));
+ Push(Temp(2));
+ Push(Unop(Temp(2), Flags))]
+| VM__Handler7__PushESP-> [Push(Reg(Esp))]
+| VM__Handler23__WriteDwordIntoFSSegment -> [DeclareTemps([(0, D);(1, D)]);
+ Pop(Temp(0));
+ Pop(Temp(1));
+ Assign(Deref(FS, Temp(0), D), Temp(1))]
+| (*...*) -> (*...*)
+To summarize the process, below is a listing of VMProtect instructions, followed by the assembly code that is executed for each, and to the right is the IR translation.
+
+VM__Handler1__PushDwordFromRegister 32
+
+; Push (Deref (Scratch, Const (Dword 32l), D));
+
+and al, 3Ch ; al = 32
+mov edx, [edi+eax]
+sub ebp, 4
+mov [ebp+0], edx
+
+VM__Handler7__PushESP
+; Push (Reg Esp);
+mov eax, ebp
+sub ebp, 4
+mov [ebp+0], eax
+
+VM__Handler0__PopIntoRegister 40
+; Pop (Deref (Scratch, Const (Dword 40l), D));
+and al, 3Ch
+mov edx, [ebp+0]
+add ebp, 4
+mov [edi+eax], edx
+
+VM__Handler19__PushSignedByteAsDword (-1l)
+; Push (Const (Dword (-1l))); 
+movzx eax, byte ptr [esi] ; *esi = -1
+sub esi, 0FFFFFFFFh
+cbw
+cwde
+sub ebp, 4
+mov [ebp+0], eax
+
+VM__Handler9__PushDword 4525664l
+; Push (Const (Dword 4525664l));
+mov eax, [esi] ; *esi = 4525664l
+add esi, 4
+sub ebp, 4
+mov [ebp+0], eax
+
+VM__Handler9__PushDword 4362952l};
+; Push (Const (Dword 4362952l));
+mov eax, [esi] ; *esi = 4362952l
+add esi, 4
+sub ebp, 4
+mov [ebp+0], eax
+
+VM__Handler19__PushSignedByteAsDword 0l};
+; Push (Const (Dword (0l))); 
+movzx eax, byte ptr [esi] ; *esi = 0
+sub esi, 0FFFFFFFFh
+cbw
+cwde
+sub ebp, 4
+mov [ebp+0], eax
+
+VM__Handler42__ReadDwordFromFSSegment};
+;Pop (Temp 0);
+;Push (Deref (FS, Temp 0, D));
+mov eax, [ebp+0]DeclareTemps([(0,D)])
+mov eax, fs:[eax]
+mov [ebp+0], eax
+ 
+← VMProtect, Part 2: Primer on OptimizationVMProtect, Part 0: Basics →
+Comments (1)Newest First
+Newest First
+Preview Post Comment…
+tFoster 4 years ago · 0 Likes
+  
+" I have created an IDA plugin that automatically constructs OCaml source code for a bytecode disassembler. In a production-quality implementation, this should be implemented as a standalone component that returns a closure."
+
+Could you please provide a link?
+Thanks in advance!
+
+Powered by Squarespace
+
+
+
+
+Möbius Strip Reverse Engineering
+Street AddressCity, State, ZipPhone Number
+Training ClassesResearchBlogContactSign In
+VMProtect, Part 2: Primer on Optimization
+August 6, 2008 Rolf Rolles
+Originally published on OpenRCE on August 6th, 2008
+
+This is part #2 of a four-part series on VMProtect. The other parts can be found here:
+
+Part 0: Basics
+Part 1: Bytecode and IR
+Part 2: Primer on Optimization
+Part 3: Optimizing and Compiling
+Basically, VMProtect bytecode and the IR differ from x86 assembly language in four ways:
+
+It's a stack machine;
+The IR contains "temporary variables";
+It contains what I've called a "scratch" area, upon which computations are performed rather than in the registers;
+ In the case of VMProtect Ultra, it's obfuscated (or rather, "de-optimized") in certain ways.
+It turns out that removing these four aspects from the IR is sufficient preparation for compilation into sensible x86 code.  We accomplish this via standard compiler optimizations applied locally to each basic block.  In general, there are a few main compiler optimizations used in this process.  The first one is "constant propagation".  Consider the following C code.
+
+int x = 1; 
+function(x);
+Clearly x will always be 1 when function is invoked:  it is defined on the first line, and is not re-defined before it is used in the following line (the definition in line one "reaches" the use in line two; alternatively, the path between the two is "definition-clear" with respect to x).  Thus, the code can be safely transformed into "function(1)".  If the first line is the only definition of the variable x, then we can replace all uses of x with the integer 1.  If the second line is the only use of the variable x, then we can eliminate the variable.
+
+The next is "constant folding".  Consider the following C code.
+
+int x = 1024; 
+function(x*1024);
+By the above remarks, we know we can transform the second line into "function(1024*1024);".  It would be silly to generate code that actually performed this multiplication at run-time:  the value is known at compile-time, and should be computed then.  We can replace the second line with "function(1048576);", and in general we can replace any binary operation performed upon constant values with the computed result of that operation.
+
+Similar to constant propagation is "copy propagation", as in the below.
+
+void f(int i)
+{
+  int j = i;
+  g(j);
+}
+The variable j is merely a copy of the variable i, and so the variable i can be substituted in for j until the point where either is redefined.  Lacking redefinitions, j can be eliminated entirely.
+
+The next optimization is "dead-store elimination".  Consider the following C code.
+
+int y = 2; 
+y = 1;
+The definition of the variable y on line one is immediately un-done by the one on line two.  Therefore, there is no reason to actually assign the value 2 to the variable; the first store to y is a "dead store", and can be eliminated by the standard liveness-based compiler optimization known as "dead-store elimination", or more generally "dead-code elimination".  
+
+Here's an example from the VMProtect IR.
+
+ecx = DWORD Scratch:[Dword(44)]
+ecx = DWORD Scratch:[Dword(20)]
+After dead-store-eliminating the first instruction, it turns out no other instructions use Scratch:[Dword(44)], and so its previous definition can be eliminated as well.
+
+ 
+← VMProtect, Part 3: Optimization and Code GenerationVMProtect, Part 1: Bytecode and IR →
+Comments (1)Newest First
+Newest First
+Preview Post Comment…
+Vacationing Vicky 4 years ago · 0 Likes
+  
+Lovedd reading this thank you
+
+Powered by Squarespace
+
+
+
+
+Möbius Strip Reverse Engineering
+Street AddressCity, State, ZipPhone Number
+Training ClassesResearchBlogContactSign In
+VMProtect, Part 3: Optimization and Code Generation
+August 6, 2008 Rolf Rolles
+Originally published on August 6th, 2008 on OpenRCE
+
+This is part #3 of a four-part series on VMProtect. The other parts can be found here:
+
+Part 0: Basics
+Part 1: Bytecode and IR
+Part 2: Primer on Optimization
+Part 3: Optimizing and Compiling
+The reader should inspect this unoptimized IR listing before continuing.  In an attempt to keep this entry from becoming unnecessarily long, the example snippets will be small, but for completeness a more thorough running example is linked throughout the text.
+
+We begin by removing the stack machine features of the IR.  Since VMProtect operates on disassembled x86 code, and x86 itself is not a stack machine, this aspect of the protection is unnatural and easily removed.  Here is a 15-line fragment of VMProtect IR.
+
+push Dword(-88)
+push esp
+push Dword(4)
+pop t3
+pop t4
+t5 = t3 + t4
+push t5
+push flags t5
+pop DWORD Scratch:[Dword(52)]
+pop t6
+pop t7
+t8 = t6 + t7
+push t8
+push flags t8
+pop DWORD Scratch:[Dword(12)]
+pop esp
+All but two instructions are pushes or pops, and the pushes can be easily matched up with the pops.  Tracking the stack pointer, we see that, for example, t3 = Dword(4).  A simple analysis allows us to "optimize away" the push/pop pairs into assignment statements.  Simply iterate through each instruction in a basic block and keep a stack describing the source of each push.  For every pop, ensure that the sizes match and record the location of the corresponding push.  We wish to replace the pop with an assignment to the popped expression from the pushed expression, as in
+
+t3 = Dword(4)
+t4 = esp 
+t7 = Dword(-88)
+With the stack aspects removed, we are left with a more conventional listing containing many assignment statements.  This optimization substantially reduces the number of instructions in a given basic block (~40% for the linked example) and opens the door for other optimizations.  The newly optimized code is eight lines, roughly half of the original:
+
+t3 = Dword(4)
+t4 = esp
+t5 = t3 + t4
+DWORD Scratch:[Dword(52)] = flags t5
+t6 = t5
+t7 = Dword(-88)
+t8 = t6 + t7
+DWORD Scratch:[Dword(12)] = flags t8
+esp = t8
+A complete listing of the unoptimized IR versus the one with the stack machine features removed is here, which should be perused before proceeding.
+
+Now we turn our attention to the temporary variables and the scratch area.  Recall that the former were not part of the pre-protected x86 code, nor the VMProtect bytecode -- they were introduced in order to ease the IR translation.  The latter is part of the VMProtect bytecode, but was not part of the original pre-protected x86 code.  Since these are not part of the languages we are modelling, we shall eliminate them wholesale.  On a high level, we treat each temporary variable, each byte of the scratch space, and each register as being a variable defined within a basic block, and then eliminate the former two via the compiler optimizations previously discussed.
+
+Looking again at the last snippet of IR, we can see several areas for improvement.  First, consider the variable t6.  It is clearly just a copy of t5, neither of which are redefined before the next use in the assignment to t8.  Copy propagation will replace variable t6 with t5 and eliminate the former.  More generally, t3, t4, and t7 contain either constants or values that are not modified between their uses.  Constant and copy propagation will substitute the assignments to these variables in for their uses and eliminate them.
+
+The newly optimized code is a slender three lines compared to the original 15; we have removed 80% of the IR for the running example.
+
+DWORD Scratch:[Dword(52)] = flags Dword(4) + esp
+esp = Dword(4) + esp + Dword(-88)
+DWORD Scratch:[Dword(12)] = flags Dword(4) + esp + Dword(-88)
+The side-by-side comparison can be found here.
+
+The IR now looks closer to x86, with the exception that the results of computations are being stored in the scratch area, not into registers.  As before, we apply dead-store elimination, copy and constant propagation to the scratch area, removing dependence upon it entirely in the process.  See here for a comparison with the last phase.
+
+Here is a comparison of the final, optimized code against the original x86:
+
+push ebp                          push ebp
+ebp = esp                         mov ebp, esp
+push Dword(-1)                    push 0FFFFFFFFh
+push Dword(4525664)               push 450E60h
+push Dword(4362952)               push offset sub_4292C8
+eax = DWORD FS:[Dword(0)]         mov eax, large fs:0
+push eax                          push eax
+DWORD FS:[Dword(0)] = esp         mov large fs:0, esp
+eflags = flags esp + Dword(-88)
+esp = esp + Dword(-88)            add esp, 0FFFFFFA8h
+push ebx                          push ebx
+push esi                          push esi
+push edi                          push edi
+DWORD SS:[Dword(-24) + ebp] = esp mov [ebp-18h], esp
+call DWORD [Dword(4590300)]       call dword ptr ds:unk_460ADC
+vmreturn Dword(0) + Dword(4638392)
+Code generation is an afterthought.
+
+ 
+← Bagle.W Thorough IDBVMProtect, Part 2: Primer on Optimization →
+Comments (0)Newest First
+Newest First
+Preview Post Comment…
+Powered by Squarespace
+
